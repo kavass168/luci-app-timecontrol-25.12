@@ -47,8 +47,15 @@ jobs:
         run: |
           cd ${{ env.SDK_DIR }}
           PLG=${{ github.event.inputs.PLUGIN_NAME }}
+          # 1. 克隆到临时目录
           git clone --depth 1 --branch ${{ github.event.inputs.PLUGIN_BRANCH }} \
-            ${{ github.event.inputs.PLUGIN_REPO }} package/$PLG
+            ${{ github.event.inputs.PLUGIN_REPO }} tmp_plg
+          # 2. 将插件子目录的内容移动到 package/$PLG
+          #    注意：源路径是 tmp_plg/luci-app-timecontrol/*，目标路径是 package/$PLG/
+          mkdir -p package/$PLG
+          mv tmp_plg/luci-app-timecontrol/* package/$PLG/
+          # 3. 清理临时目录
+          rm -rf tmp_plg
 
       # 更新feeds并安装所有依赖（修正）
       - name: Update & Install Feeds
