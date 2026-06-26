@@ -98,7 +98,7 @@ jobs:
             sed -i "/^CONFIG_PACKAGE_${pkg}/d" .config
             echo "CONFIG_PACKAGE_${pkg}=n" >> .config
           done
-          make olddefconfig
+          make defconfig
 
       # 下载依赖 + 编译插件
       - name: Build Plugin Only
