@@ -124,7 +124,9 @@ return view.extend({
 
     render: function(data) {
         var m, s, o;
-        let hosts = data[1]?.hosts;
+        // ======== 修改点（第78行）：将 data[1]?.hosts 改为兼容写法 ========
+        let hosts = data[1] && data[1].hosts;   // 原为 data[1]?.hosts，避免可选链语法错误
+        // ======== 修改结束 ========
 
         m = new form.Map('timecontrol', _('Internet Time Control'),
             _('Users can limit their internet usage time through MAC and IP, with available IP ranges such as 192.168.110.00 to 192.168.10.200') + '<br/>' +
