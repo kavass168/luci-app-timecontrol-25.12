@@ -45,8 +45,15 @@ jobs:
       - name: Clone Plugin
         run: |
           cd ${{ env.SDK_DIR }}
+          PLG=${{ github.event.inputs.PLUGIN_NAME }}
+          # 先克隆到临时文件夹
           git clone --depth 1 --branch ${{ github.event.inputs.PLUGIN_BRANCH }} \
-            ${{ github.event.inputs.PLUGIN_REPO }} package/${{ github.event.inputs.PLUGIN_NAME }}
+           ${{ github.event.inputs.PLUGIN_REPO }} tmp_plg
+          # 把仓库内所有文件移动到正确package目录，无嵌套
+          mkdir -p package/$PLG
+          ls tmp_plg
+          mv tmp_plg/* package/$PLG/
+          rm -rf tmp_plg
 
       # 极简feed更新，只拉luci/packages
       - name: Update Feeds Mini
