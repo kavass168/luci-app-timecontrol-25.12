@@ -318,15 +318,19 @@ main_loop() {
     init_dirs
     while :; do
         dbg "开始检查设备"
-        [ `uci show $NAME 2>/dev/null | grep "enable='1'" | grep "device" | grep -oE '\[.*?\]' | grep -o '[0-9]' | sort -n | wc -l` eq 0 ] && timecontrol stop && break
+        # 获取启用设备数量
+        count=$(uci show "$NAME" 2>/dev/null | grep "enable='1'" | grep "device" | grep -oE '\[.*?\]' | grep -o '[0-9]' | sort -n | wc -l)
+        if [ "${count:-0}" -eq 0 ]; then
+            timecontrol stop
+            break
+        fi
         for id in $(get_enabled_devices); do
             if check_device_control "$id"; then
-                update_device_status "$id" 0  # 允许
+                update_device_status "$id" 0
             else
-                update_device_status "$id" 1  # 阻止
+                update_device_status "$id" 1
             fi
         done
-        
         sleep 60
     done
 }
