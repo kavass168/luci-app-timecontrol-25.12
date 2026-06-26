@@ -19,7 +19,7 @@ LUCI_DEPENDS:=+bc +nftables +conntrack
 LUCI_PKGARCH:=all
 
 PKG_VERSION:=3.2.4
-PKG_RELEASE:=1          # 修改为常规数字版本号（原为 20260322）
+PKG_RELEASE:=2
 
 PKG_MAINTAINER:=sirpdboy <herboy2008@gmail.com>
 
