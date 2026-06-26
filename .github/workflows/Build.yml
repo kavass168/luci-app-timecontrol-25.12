@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 缓存SDK本体 + dl下载目录（必须设置 id）
+      # 缓存SDK本体 + dl下载目录
       - name: Cache SDK & DL
         id: sdk-cache
         uses: actions/cache@v4
@@ -42,7 +42,7 @@ jobs:
           tar -xf sdk.tar.zst -C ${{ env.SDK_DIR }} --strip-components=1
           rm -f sdk.tar.zst
 
-      # 克隆插件（修正：处理子目录结构）
+      # 克隆插件并修复版本号
       - name: Clone Plugin
         run: |
           cd ${{ env.SDK_DIR }}
@@ -50,34 +50,49 @@ jobs:
           # 1. 克隆到临时目录
           git clone --depth 1 --branch ${{ github.event.inputs.PLUGIN_BRANCH }} \
             ${{ github.event.inputs.PLUGIN_REPO }} tmp_plg
-          # 2. 将插件子目录（与PLUGIN_NAME同名）的内容移动到 package/$PLG
-          #    注意：仓库根目录下是 luci-app-timecontrol 文件夹，其内容才是插件源码
+          # 2. 将插件子目录的内容移动到 package/$PLG
           mkdir -p package/$PLG
           mv tmp_plg/$PLG/* package/$PLG/
           # 3. 清理临时目录
           rm -rf tmp_plg
+
+          # ---- 修复插件 Makefile 中的版本号（避免无效字符） ----
+          cd package/$PLG
+          # 如果 PKG_VERSION 包含 -r* 则提取基础版本
+          if grep -q '^PKG_VERSION:=.*-r' Makefile; then
+            BASE_VERSION=$(grep '^PKG_VERSION:=' Makefile | sed 's/PKG_VERSION:=//' | sed 's/-r.*//')
+            echo "检测到版本号含 -r，修正为 ${BASE_VERSION}"
+            sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=${BASE_VERSION}/" Makefile
+          fi
+          # 确保 PKG_RELEASE 存在且为数字
+          if ! grep -q '^PKG_RELEASE:=' Makefile; then
+            echo "PKG_RELEASE:=1" >> Makefile
+          fi
+          # 可选：打印修改后的版本信息
+          grep '^PKG_VERSION' Makefile || true
+          grep '^PKG_RELEASE' Makefile || true
 
       # 更新feeds并安装所有依赖
       - name: Update & Install Feeds
         run: |
           cd ${{ env.SDK_DIR }}
           ./scripts/feeds update packages luci
-          ./scripts/feeds install -a   # 安装所有依赖，确保插件依赖可用
+          ./scripts/feeds install -a
 
-      # 生成极简配置（重点优化：删除有问题的包并强制禁用）
+      # 生成极简配置（删除问题包，强制禁用）
       - name: Gen Min Config
         run: |
           cd ${{ env.SDK_DIR }}
 
-          # ---- 删除已知有问题的包源码目录（避免被编译系统加载） ----
+          # ---- 删除已知有问题的包源码目录 ----
           rm -rf feeds/packages/libs/libnetfilter-*
           rm -rf feeds/luci/applications/luci-app-diskman
-          rm -rf feeds/packages/net/conntrack-tools   # 依赖 libnfnetlink，但该库不存在
+          rm -rf feeds/packages/net/conntrack-tools
 
           # 第一次 defconfig：生成默认配置
           make defconfig
 
-          # ---- 强制禁用这些包（多重保险） ----
+          # ---- 强制禁用这些包 ----
           for pkg in libnetfilter-cttimeout libnetfilter-cthelper libnetfilter-queue luci-app-diskman conntrack-tools; do
             sed -i "/^CONFIG_PACKAGE_${pkg}/d" .config
             echo "CONFIG_PACKAGE_${pkg}=n" >> .config
@@ -89,7 +104,7 @@ jobs:
           echo "CONFIG_USE_APK=y" >> .config
           echo "CONFIG_PACKAGE_${{ github.event.inputs.PLUGIN_NAME }}=m" >> .config
 
-          # ---- 第二次 defconfig：刷新配置，使手动修改生效 ----
+          # 第二次 defconfig：刷新配置
           make defconfig
 
           # 检查插件是否已正确启用
@@ -99,12 +114,10 @@ jobs:
       - name: Build Plugin Only
         run: |
           cd ${{ env.SDK_DIR }}
-          # 只下载插件依赖（使用多线程加速）
           make -j$(nproc) package/${{ github.event.inputs.PLUGIN_NAME }}/download
-          # 单线程编译，便于排错；保留 V=s 输出完整日志
           make -j1 package/${{ github.event.inputs.PLUGIN_NAME }}/compile V=s
 
-      # 打包产物（打包整个 BIN 目录，简单可靠）
+      # 打包产物
       - name: Archive Output
         run: |
           BIN=${{ env.SDK_DIR }}/bin/packages/${{ env.ARCH }}
