@@ -73,7 +73,7 @@ jobs:
           sed -i "/^CONFIG_PACKAGE_${{ github.event.inputs.PLUGIN_NAME }}=/d" .config
           echo "CONFIG_USE_APK=y" >> .config
           echo "CONFIG_PACKAGE_${{ github.event.inputs.PLUGIN_NAME }}=m" >> .config
-          make olddefconfig
+          
 
 
       # 下载依赖 + 编译插件
