@@ -14,11 +14,13 @@ PKG_LICENSE:=Apache-2.0
 
 LUCI_TITLE:=LuCI support for timecontrol for nftables
 LUCI_DESCRIPTION:=LuCI support for Easy timecontrol for nftables(Internet time control).
-LUCI_DEPENDS:=+bc +nftables +bash +conntrack
+# 移除 +bash，因为已改用 ash 兼容脚本；保留 conntrack（可选）
+LUCI_DEPENDS:=+bc +nftables +conntrack
 LUCI_PKGARCH:=all
 
 PKG_VERSION:=3.2.4
-PKG_RELEASE:=20260322
+PKG_RELEASE:=1          # 修改为常规数字版本号（原为 20260322）
+
 PKG_MAINTAINER:=sirpdboy <herboy2008@gmail.com>
 
 define Build/Compile
@@ -36,4 +38,3 @@ endef
 include $(TOPDIR)/feeds/luci/luci.mk
 
 # call BuildPackage - OpenWrt buildroot signature
-
