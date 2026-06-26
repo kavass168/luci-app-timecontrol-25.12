@@ -23,8 +23,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 缓存SDK本体 + dl下载目录（最大提速项）
+      # 缓存SDK本体 + dl下载目录（必须设置 id）
       - name: Cache SDK & DL
+        id: sdk-cache   # <--- 添加 id
         uses: actions/cache@v4
         with:
           path: |
@@ -32,37 +33,31 @@ jobs:
             ${{ env.SDK_DIR }}/dl
           key: filogic-sdk2512-${{ env.ARCH }}
 
-      # 缓存未命中才下载SDK，断点续传
+      # 缓存未命中才下载SDK
       - name: Get SDK
-        if: steps.cache.outputs.cache-hit != 'true'
+        if: steps.sdk-cache.outputs.cache-hit != 'true'   # <--- 正确引用
         run: |
           wget -c -q ${{ env.SDK_URL }} -O sdk.tar.zst
           mkdir -p ${{ env.SDK_DIR }}
           tar -xf sdk.tar.zst -C ${{ env.SDK_DIR }} --strip-components=1
           rm -f sdk.tar.zst
 
-      # 浅克隆插件
+      # 直接克隆插件到 package 目录（修正）
       - name: Clone Plugin
         run: |
           cd ${{ env.SDK_DIR }}
           PLG=${{ github.event.inputs.PLUGIN_NAME }}
-          # 先克隆到临时文件夹
           git clone --depth 1 --branch ${{ github.event.inputs.PLUGIN_BRANCH }} \
-            ${{ github.event.inputs.PLUGIN_REPO }} tmp_plg
-          # 把仓库内所有文件移动到正确package目录，无嵌套
-          mkdir -p package/$PLG
-          ls tmp_plg
-          mv tmp_plg/$PLG/* package/$PLG/
-          ls package/$PLG
-          rm -rf tmp_plg
+            ${{ github.event.inputs.PLUGIN_REPO }} package/$PLG
 
-      # 极简feed更新，只拉luci/packages
-      - name: Update Feeds Mini
+      # 更新feeds并安装所有依赖（修正）
+      - name: Update & Install Feeds
         run: |
           cd ${{ env.SDK_DIR }}
           ./scripts/feeds update packages luci
+          ./scripts/feeds install -a   # <--- 增加 install
 
-      # 极速生成.config：不执行defconfig/oldconfig
+      # 生成极简配置
       - name: Gen Min Config
         run: |
           cd ${{ env.SDK_DIR }}
@@ -72,20 +67,23 @@ jobs:
           echo "CONFIG_USE_APK=y" >> .config
           echo "CONFIG_PACKAGE_${{ github.event.inputs.PLUGIN_NAME }}=m" >> .config
 
-      # 单条链式编译：预处理+下载依赖+编译，全程只处理目标插件
+      # 下载依赖 + 编译插件
       - name: Build Plugin Only
         run: |
           cd ${{ env.SDK_DIR }}
           make -j$(nproc) package/${{ github.event.inputs.PLUGIN_NAME }}/download
-          # 编译插件，仅输出关键日志减少IO
+          # 若编译失败可改为 V=s 调试
           make -j$(nproc) package/${{ github.event.inputs.PLUGIN_NAME }}/compile V=w
 
-      # 打包产物
+      # 打包产物（修正：使用 find 或打包整个目录）
       - name: Archive Output
         run: |
           BIN=${{ env.SDK_DIR }}/bin/packages/${{ env.ARCH }}
           TAR=${{ env.ARCH }}_${{ github.event.inputs.PLUGIN_NAME }}.tar.gz
-          tar -zcvf $TAR -C $BIN --wildcards "${{ github.event.inputs.PLUGIN_NAME }}*.apk" "${{ github.event.inputs.PLUGIN_NAME }}*.ipk"
+          # 方式一：打包整个 BIN 目录（最简单）
+          tar -zcvf $TAR -C $BIN .
+          # 或方式二：只包含插件相关文件（递归查找）
+          # find $BIN -type f \( -name "${{ github.event.inputs.PLUGIN_NAME }}*.apk" -o -name "${{ github.event.inputs.PLUGIN_NAME }}*.ipk" \) -exec tar -rvf $TAR -C $BIN {} + 2>/dev/null
           echo "TAR=$TAR" >> $GITHUB_ENV
 
       - name: Upload Artifact
