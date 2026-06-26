@@ -91,7 +91,7 @@ jobs:
           echo "CONFIG_PACKAGE_${{ github.event.inputs.PLUGIN_NAME }}=m" >> .config
 
           # 自动处理新配置选项
-          make olddefconfig
+          make defconfig
 
           # ---- 再次强制禁用（防止 olddefconfig 重新启用） ----
           for pkg in libnetfilter-cttimeout libnetfilter-cthelper libnetfilter-queue luci-app-diskman; do
