@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 /*
  * Copyright (C) 2022-2026 sirpdboy <herboy2008@gmail.com>
+ * 修改：支持多时段、重置按钮、已用时长显示
  */
 'use strict';
 'require view';
@@ -51,29 +52,6 @@ function renderServiceStatus(isRunning, pid) {
     return statusHtml;
 }
 
-function getHostList() {
-    return L.resolveDefault(network.getHostHints(), [])
-        .then(function(hosts) {
-            var hostList = [];
-            if (hosts && hosts.length > 0) {
-                hosts.forEach(function(host) {
-                    if (host.ipv4 && host.mac) {
-                        hostList.push({
-                            ipv4: host.ipv4,
-                            mac: host.mac,
-                            name: host.name || '',
-                            ipv6: host.ipv6 || ''
-                        });
-                    }
-                });
-            }
-            return hostList;
-        })
-        .catch(function() {
-            return [];
-        });
-}
-
 var cbiRichListValue = form.ListValue.extend({
     renderWidget: function(section_id, option_index, cfgvalue) {
         var choices = this.transformChoices();
@@ -118,11 +96,10 @@ return view.extend({
 
         m = new form.Map('timecontrol', _('Internet Time Control'),
             _('Users can limit their internet usage time through MAC and IP, with available IP ranges such as 192.168.110.00 to 192.168.10.200') + '<br/>' +
-            _('黑名单模式时间控制方式:') + '<br/>' +
+            _('控制方式:') + '<br/>' +
             _('1. 时间段控制: 指定的机器在设定时间段内可以上网，其他时间不能上网') + '<br/>' +
             _('2. 允许上机时长: 指定的机器上线后可以上网指定时长，超过时长后不能上网') + '<br/>' +
             _('3. 组合控制: 在时间段内+时长限制（在允许的时间段内限制上网时长）') + '<br/>' +
-            /* [新增] 多时段控制说明 */
             _('4. 多时段控制: 最多设置3个独立时间段，每个时段分别限制时长') + '<br/>' +
             _('Suggested feedback:') + ' <a href="https://github.com/sirpdboy/luci-app-timecontrol.git" target="_blank">GitHub @timecontrol</a>');
 
@@ -194,8 +171,14 @@ return view.extend({
         s.addremove = true;
         s.anonymous = true;
         s.sortable = false;
-        // 为表格添加ID以便查找
         s.id = 'device-table';
+
+        // ===== 自定义列：已用时长 =====
+        var usageCol = s.option(form.DummyValue, 'usage', _('Used Time (min)'));
+        usageCol.rawhtml = true;
+        usageCol.render = function(section_id) {
+            return E('span', { 'class': 'usage-display', 'data-id': section_id }, _('--'));
+        };
 
         o = s.option(form.Value, 'comment', _('Comment'));
         o.optional = true;
@@ -237,28 +220,24 @@ return view.extend({
             });
         }
 
-        // ===== 时间控制模式 =====
+        // 时间控制模式
         o = s.option(cbiRichListValue, 'time_mode', _('Time Control Mode'));
         o.value('period', _('Time Period Control (allow in period)'));
         o.value('duration', _('Allow Duration Control (allow limited time)'));
         o.value('combined', _('Combined Control (allow in period + limit duration)'));
-        /* [新增] 多时段控制选项 */
         o.value('multi_period', _('Multi-Period Control (up to 3 periods)'));
         o.default = 'period';
         o.rmempty = false;
 
-        // onchange 控制字段显隐，修改以支持 multi_period
         o.onchange = function(ev, mode) {
             var row = this.map.findElement('id', this.cbid(this.section_id));
             if (row) {
-                // 单时段相关字段（timestart, timeend, duration, use_duration, reset_cycle）
                 var startTime = row.querySelector('[data-field="timestart"]');
                 var endTime = row.querySelector('[data-field="timeend"]');
                 var duration = row.querySelector('[data-field="duration"]');
                 var useDuration = row.querySelector('[data-field="use_duration"]');
                 var resetCycle = row.querySelector('[data-field="reset_cycle"]');
 
-                // 多时段相关字段 (period1_start, period1_end, period1_duration, ...)
                 var periodFields = [];
                 for (var i = 1; i <= 3; i++) {
                     periodFields.push({
@@ -268,10 +247,8 @@ return view.extend({
                     });
                 }
 
-                // 判断是否为多时段模式
                 var isMulti = (mode === 'multi_period');
 
-                // 单时段字段显隐
                 if (startTime) startTime.parentElement.style.display =
                     (mode === 'period' || mode === 'combined') ? '' : 'none';
                 if (endTime) endTime.parentElement.style.display =
@@ -283,7 +260,6 @@ return view.extend({
                 if (resetCycle) resetCycle.parentElement.style.display =
                     (mode === 'duration' || mode === 'combined' || isMulti) ? '' : 'none';
 
-                // 多时段字段显隐
                 periodFields.forEach(function(pf) {
                     if (pf.start) pf.start.parentElement.style.display = isMulti ? '' : 'none';
                     if (pf.end) pf.end.parentElement.style.display = isMulti ? '' : 'none';
@@ -292,7 +268,7 @@ return view.extend({
             }
         };
 
-        // ===== 单时段字段 =====
+        // 单时段字段
         o = s.option(form.Value, 'timestart', _('Allow Start Time'));
         o.placeholder = '00:00';
         o.default = '00:00';
@@ -313,13 +289,12 @@ return view.extend({
         o.depends({ 'time_mode': 'combined', '!contains': true });
         o.description = _('设备上线后允许上网的分钟数，超过后将被禁止上网');
 
-        // 组合控制：是否在时间段内启用时长限制
         o = s.option(form.Flag, 'use_duration', _('Enable Duration Limit in Period'));
         o.default = '0';
         o.depends({ 'time_mode': 'combined', '!contains': true });
         o.description = _('在允许的时间段内限制上网时长');
 
-        // ===== 多时段字段（新增） =====
+        // 多时段字段
         for (var p = 1; p <= 3; p++) {
             var prefix = 'period' + p;
             var startOpt = s.option(form.Value, prefix + '_start', _('Period %d Start Time').format(p));
@@ -339,9 +314,8 @@ return view.extend({
             durOpt.depends({ 'time_mode': 'multi_period' });
             durOpt.description = _('该时段内允许上网的分钟数');
         }
-        // ===== 多时段字段结束 =====
 
-        // 重置周期（所有模式共用）
+        // 重置周期
         o = s.option(cbiRichListValue, 'reset_cycle', _('Reset Cycle'));
         o.value('daily', _('Daily Reset'));
         o.value('weekly', _('Weekly Reset'));
@@ -350,11 +324,10 @@ return view.extend({
         o.default = 'daily';
         o.depends({ 'time_mode': 'duration', '!contains': true });
         o.depends({ 'time_mode': 'combined', '!contains': true });
-        /* [新增] 多时段也依赖 */
         o.depends({ 'time_mode': 'multi_period', '!contains': true });
         o.description = _('时长重置周期');
 
-        // 星期（所有模式共用）
+        // 星期
         o = s.option(form.Value, 'week', _('Week Day (1~7)'));
         o.value('0', _('Everyday'));
         o.value('1', _('Monday'));
@@ -370,12 +343,12 @@ return view.extend({
         o.rmempty = false;
         o.description = _('允许上网的星期');
 
-        // ===== [新增] 自定义表格渲染：在每行添加“重置时间”按钮 =====
-        // 保存原有 render 方法（如果有），但我们直接替换
+        // ===== 自定义渲染：添加重置按钮和已用时长轮询 =====
+        // 保存原始render，但我们直接重写
         var origRender = s.render;
         s.render = function() {
             var result = origRender.call(this);
-            // 延迟执行，确保 DOM 已更新
+            // 延迟执行DOM操作
             setTimeout(function() {
                 var rows = document.querySelectorAll('#device-table tbody tr');
                 rows.forEach(function(row) {
@@ -383,27 +356,58 @@ return view.extend({
                     if (!id) return;
                     var actionsCell = row.querySelector('.cbi-section-actions');
                     if (!actionsCell) return;
-                    // 避免重复添加按钮
-                    if (actionsCell.querySelector('.cbi-button-reset')) return;
-                    var btn = E('button', {
-                        'class': 'cbi-button cbi-button-reset',
-                        'click': function(ev) {
-                            ev.preventDefault();
-                            if (confirm(_('Are you sure you want to reset the time limit for this device?'))) {
-                                fs.exec_direct('/usr/bin/timecontrol', ['reset', id])
-                                    .then(function() {
-                                        ui.addNotification(null, E('p', _('Reset successful, will take effect in next minute')), 'info');
-                                        // 刷新页面以更新状态
-                                        location.reload();
-                                    })
-                                    .catch(function(err) {
-                                        ui.addNotification(null, E('p', _('Reset failed: %s').format(err)), 'error');
-                                    });
+                    
+                    // 添加重置按钮（避免重复）
+                    if (!actionsCell.querySelector('.cbi-button-reset')) {
+                        var btn = E('button', {
+                            'class': 'cbi-button cbi-button-reset',
+                            'click': function(ev) {
+                                ev.preventDefault();
+                                if (confirm(_('Are you sure you want to reset the time limit for this device?'))) {
+                                    fs.exec_direct('/usr/bin/timecontrol', ['reset', id])
+                                        .then(function() {
+                                            ui.addNotification(null, E('p', _('Reset successful, will take effect in next minute')), 'info');
+                                            location.reload();
+                                        })
+                                        .catch(function(err) {
+                                            ui.addNotification(null, E('p', _('Reset failed: %s').format(err)), 'error');
+                                        });
+                                }
                             }
-                        }
-                    }, _('Reset Time'));
-                    actionsCell.appendChild(btn);
+                        }, _('Reset Time'));
+                        actionsCell.appendChild(btn);
+                    }
                 });
+
+                // 启动已用时长轮询
+                poll.add(function() {
+                    var sections = uci.sections('timecontrol', 'device');
+                    sections.forEach(function(s) {
+                        var id = s['.name'];
+                        if (!id) return;
+                        fs.exec_direct('/usr/bin/timecontrol', ['getusage', id, 'all'])
+                            .then(function(res) {
+                                var output = res.trim();
+                                var span = document.querySelector('.usage-display[data-id="' + id + '"]');
+                                if (span) {
+                                    // output 格式 "1:5,2:10,3:0"
+                                    var parts = output.split(',');
+                                    var display = parts.map(function(p) {
+                                        var kv = p.split(':');
+                                        if (kv.length === 2) {
+                                            return _('P%s: %s min').format(kv[0], kv[1]);
+                                        }
+                                        return p;
+                                    }).join(' | ');
+                                    span.textContent = display;
+                                }
+                            })
+                            .catch(function(err) {
+                                // 忽略错误，保留显示不变
+                            });
+                    });
+                }, 10); // 10秒刷新
+
             }, 100);
             return result;
         };
