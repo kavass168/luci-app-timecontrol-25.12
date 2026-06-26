@@ -23,7 +23,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 缓存SDK本体 + dl下载目录
       - name: Cache SDK & DL
         id: sdk-cache
         uses: actions/cache@v4
@@ -33,7 +32,6 @@ jobs:
             ${{ env.SDK_DIR }}/dl
           key: filogic-sdk2512-${{ env.ARCH }}
 
-      # 缓存未命中才下载SDK
       - name: Get SDK
         if: steps.sdk-cache.outputs.cache-hit != 'true'
         run: |
@@ -42,82 +40,67 @@ jobs:
           tar -xf sdk.tar.zst -C ${{ env.SDK_DIR }} --strip-components=1
           rm -f sdk.tar.zst
 
-      # 克隆插件并修复版本号
       - name: Clone Plugin
         run: |
           cd ${{ env.SDK_DIR }}
           PLG=${{ github.event.inputs.PLUGIN_NAME }}
-          # 1. 克隆到临时目录
           git clone --depth 1 --branch ${{ github.event.inputs.PLUGIN_BRANCH }} \
             ${{ github.event.inputs.PLUGIN_REPO }} tmp_plg
-          # 2. 将插件子目录的内容移动到 package/$PLG
           mkdir -p package/$PLG
           mv tmp_plg/$PLG/* package/$PLG/
-          # 3. 清理临时目录
           rm -rf tmp_plg
 
-          # ---- 修复插件 Makefile 中的版本号（避免无效字符） ----
+          # ---- 修复 Makefile 版本号 ----
           cd package/$PLG
-          # 如果 PKG_VERSION 包含 -r* 则提取基础版本
-          if grep -q '^PKG_VERSION:=.*-r' Makefile; then
-            BASE_VERSION=$(grep '^PKG_VERSION:=' Makefile | sed 's/PKG_VERSION:=//' | sed 's/-r.*//')
-            echo "检测到版本号含 -r，修正为 ${BASE_VERSION}"
-            sed -i "s/^PKG_VERSION:=.*/PKG_VERSION:=${BASE_VERSION}/" Makefile
+          CUR_VER=$(grep '^[[:space:]]*PKG_VERSION:=' Makefile | head -1 | \
+                    sed 's/^[[:space:]]*PKG_VERSION:=//' | \
+                    sed 's/[[:space:]]*$//' | \
+                    sed 's/-r.*//' | \
+                    sed 's/[^0-9.]//g')
+          if [ -z "$CUR_VER" ]; then
+            CUR_VER="3.2.4"
           fi
-          # 确保 PKG_RELEASE 存在且为数字
-          if ! grep -q '^PKG_RELEASE:=' Makefile; then
+          sed -i "s/^[[:space:]]*PKG_VERSION:=.*/PKG_VERSION:=${CUR_VER}/" Makefile
+          if grep -q '^[[:space:]]*PKG_RELEASE:=' Makefile; then
+            sed -i 's/^[[:space:]]*PKG_RELEASE:=.*/PKG_RELEASE:=1/' Makefile
+          else
             echo "PKG_RELEASE:=1" >> Makefile
           fi
-          # 可选：打印修改后的版本信息
-          grep '^PKG_VERSION' Makefile || true
-          grep '^PKG_RELEASE' Makefile || true
+          echo "修正后的版本："
+          grep '^PKG_VERSION' Makefile
+          grep '^PKG_RELEASE' Makefile
 
-      # 更新feeds并安装所有依赖
       - name: Update & Install Feeds
         run: |
           cd ${{ env.SDK_DIR }}
           ./scripts/feeds update packages luci
           ./scripts/feeds install -a
 
-      # 生成极简配置（删除问题包，强制禁用）
       - name: Gen Min Config
         run: |
           cd ${{ env.SDK_DIR }}
-
-          # ---- 删除已知有问题的包源码目录 ----
           rm -rf feeds/packages/libs/libnetfilter-*
           rm -rf feeds/luci/applications/luci-app-diskman
           rm -rf feeds/packages/net/conntrack-tools
 
-          # 第一次 defconfig：生成默认配置
           make defconfig
-
-          # ---- 强制禁用这些包 ----
           for pkg in libnetfilter-cttimeout libnetfilter-cthelper libnetfilter-queue luci-app-diskman conntrack-tools; do
             sed -i "/^CONFIG_PACKAGE_${pkg}/d" .config
             echo "CONFIG_PACKAGE_${pkg}=n" >> .config
           done
-
-          # 启用 APK 格式和我们的插件
           sed -i '/^CONFIG_USE_APK/d' .config
           sed -i "/^CONFIG_PACKAGE_${{ github.event.inputs.PLUGIN_NAME }}=/d" .config
           echo "CONFIG_USE_APK=y" >> .config
           echo "CONFIG_PACKAGE_${{ github.event.inputs.PLUGIN_NAME }}=m" >> .config
-
-          # 第二次 defconfig：刷新配置
           make defconfig
+          grep "^CONFIG_PACKAGE_${{ github.event.inputs.PLUGIN_NAME }}" .config || echo "警告：插件未启用"
 
-          # 检查插件是否已正确启用
-          grep "^CONFIG_PACKAGE_${{ github.event.inputs.PLUGIN_NAME }}" .config || echo "警告：插件未在 .config 中启用"
-
-      # 下载依赖 + 编译插件
       - name: Build Plugin Only
         run: |
           cd ${{ env.SDK_DIR }}
           make -j$(nproc) package/${{ github.event.inputs.PLUGIN_NAME }}/download
           make -j1 package/${{ github.event.inputs.PLUGIN_NAME }}/compile V=s
 
-      # 打包产物
       - name: Archive Output
         run: |
           BIN=${{ env.SDK_DIR }}/bin/packages/${{ env.ARCH }}
