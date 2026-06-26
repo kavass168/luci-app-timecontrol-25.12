@@ -194,6 +194,8 @@ return view.extend({
         s.addremove = true;
         s.anonymous = true;
         s.sortable = false;
+        // 为表格添加ID以便查找
+        s.id = 'device-table';
 
         o = s.option(form.Value, 'comment', _('Comment'));
         o.optional = true;
@@ -279,7 +281,7 @@ return view.extend({
                 if (useDuration) useDuration.parentElement.style.display =
                     (mode === 'combined') ? '' : 'none';
                 if (resetCycle) resetCycle.parentElement.style.display =
-                    (mode === 'duration' || mode === 'combined' || isMulti) ? '' : 'none'; // 多时段也显示重置周期
+                    (mode === 'duration' || mode === 'combined' || isMulti) ? '' : 'none';
 
                 // 多时段字段显隐
                 periodFields.forEach(function(pf) {
@@ -324,7 +326,6 @@ return view.extend({
             startOpt.placeholder = '00:00';
             startOpt.default = '00:00';
             startOpt.depends({ 'time_mode': 'multi_period' });
-            // 隐藏于其他模式（通过 onchange 控制，但依赖 depends 会导致不显示，我们同时用 depends 限制）
 
             var endOpt = s.option(form.Value, prefix + '_end', _('Period %d End Time').format(p));
             endOpt.placeholder = '00:00';
@@ -347,7 +348,6 @@ return view.extend({
         o.value('monthly', _('Monthly Reset'));
         o.value('never', _('Never Reset (until manual reset)'));
         o.default = 'daily';
-        // 依赖：对于 duration、combined、multi_period 显示，其他隐藏
         o.depends({ 'time_mode': 'duration', '!contains': true });
         o.depends({ 'time_mode': 'combined', '!contains': true });
         /* [新增] 多时段也依赖 */
@@ -369,6 +369,44 @@ return view.extend({
         o.default = '0';
         o.rmempty = false;
         o.description = _('允许上网的星期');
+
+        // ===== [新增] 自定义表格渲染：在每行添加“重置时间”按钮 =====
+        // 保存原有 render 方法（如果有），但我们直接替换
+        var origRender = s.render;
+        s.render = function() {
+            var result = origRender.call(this);
+            // 延迟执行，确保 DOM 已更新
+            setTimeout(function() {
+                var rows = document.querySelectorAll('#device-table tbody tr');
+                rows.forEach(function(row) {
+                    var id = row.dataset.section;
+                    if (!id) return;
+                    var actionsCell = row.querySelector('.cbi-section-actions');
+                    if (!actionsCell) return;
+                    // 避免重复添加按钮
+                    if (actionsCell.querySelector('.cbi-button-reset')) return;
+                    var btn = E('button', {
+                        'class': 'cbi-button cbi-button-reset',
+                        'click': function(ev) {
+                            ev.preventDefault();
+                            if (confirm(_('Are you sure you want to reset the time limit for this device?'))) {
+                                fs.exec_direct('/usr/bin/timecontrol', ['reset', id])
+                                    .then(function() {
+                                        ui.addNotification(null, E('p', _('Reset successful, will take effect in next minute')), 'info');
+                                        // 刷新页面以更新状态
+                                        location.reload();
+                                    })
+                                    .catch(function(err) {
+                                        ui.addNotification(null, E('p', _('Reset failed: %s').format(err)), 'error');
+                                    });
+                            }
+                        }
+                    }, _('Reset Time'));
+                    actionsCell.appendChild(btn);
+                });
+            }, 100);
+            return result;
+        };
 
         return m.render();
     }
