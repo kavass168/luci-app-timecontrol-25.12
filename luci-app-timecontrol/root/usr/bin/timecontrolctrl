@@ -9,8 +9,7 @@
 # 3. 设备 ID 提取使用 grep -oE '[0-9]+' 避免拆分多位数
 # 4. 时长重置改用 date +%Y%m%d / %Y%W / %Y%m 直接比较，避免 date -d
 # 5. 变量引用添加双引号避免分词
-#
-# [新增] 支持 multi_period 模式：最多3个独立时段，每个时段独立计时
+# 6. 新增：流量感知计时（需 bandix 插件支持）
 
 NAME=timecontrol
 LOG_FILE="/var/log/timecontrol.log"
@@ -20,8 +19,8 @@ DEBUG=1
 DURATION_DIR="/var/lib/timecontrol"
 DURATION_DB="$DURATION_DIR/duration.db"
 CONNECTION_LOG="$DURATION_DIR/connections.log"
-# [新增] 多时段时长数据库：target,period,last_connect,total_used,last_reset
 PERIOD_DURATION_DB="$DURATION_DIR/period_duration.db"
+TRAFFIC_STATE_DIR="$DURATION_DIR/traffic_state"   # 流量状态存储
 
 # 状态文件
 IDLIST="/var/$NAME.idlist"
@@ -30,6 +29,7 @@ STATUS_DB="$DURATION_DIR/status.db"
 # 初始化目录
 init_dirs() {
     mkdir -p "$DURATION_DIR"
+    mkdir -p "$TRAFFIC_STATE_DIR"
     touch "$DURATION_DB" "$CONNECTION_LOG" "$STATUS_DB" "$PERIOD_DURATION_DB" 2>/dev/null
 }
 
@@ -53,7 +53,7 @@ config_t_get() {
     echo "${ret:-${4}}"
 }
 
-# 获取启用设备（修复：匹配完整数字 ID）
+# 获取启用设备
 get_enabled_devices() {
     uci show "$NAME" 2>/dev/null | grep "enable='1'" | grep "device" | grep -oE '\[[0-9]+\]' | grep -oE '[0-9]+' | sort -n
 }
@@ -86,7 +86,7 @@ is_weekday_in_range() {
     return 1
 }
 
-# ============= 原有单时段时长管理 =============
+# ============= 时长管理（原有） =============
 record_connection_time() {
     local target="$1"
     local action="$2"
@@ -133,7 +133,6 @@ get_connection_time() {
     fi
 }
 
-# 重置检查（原有）
 should_reset_duration() {
     local target="$1"
     local reset_cycle="$2"
@@ -180,9 +179,7 @@ reset_duration_counter() {
     info "重置时长: $target (周期: $reset_cycle)"
 }
 
-# ============= [新增] 多时段时长管理 =============
-
-# 获取某个时段已用秒数
+# ============= 多时段管理 =============
 get_period_used() {
     local target="$1"
     local period="$2"
@@ -192,7 +189,6 @@ get_period_used() {
     if grep -q "^$target,$period," "$PERIOD_DURATION_DB" 2>/dev/null; then
         local last_connect=$(grep "^$target,$period," "$PERIOD_DURATION_DB" | cut -d',' -f3)
         total_used=$(grep "^$target,$period," "$PERIOD_DURATION_DB" | cut -d',' -f4)
-        # 如果 last_connect > 0，表示当前处于连接状态，累加时间差
         if [ -n "$last_connect" ] && [ "$last_connect" -gt 0 ]; then
             local session=$((current_time - last_connect))
             [ "$session" -gt 0 ] && total_used=$((total_used + session))
@@ -201,32 +197,25 @@ get_period_used() {
     echo "$total_used"
 }
 
-# 更新时段状态：allow 或 deny
 update_period_state() {
     local target="$1"
     local period="$2"
-    local action="$3"   # "allow" 或 "deny"
+    local action="$3"
     local current_time=$(date +%s)
     
-    # 查找是否存在记录
     if grep -q "^$target,$period," "$PERIOD_DURATION_DB" 2>/dev/null; then
         local last_connect=$(grep "^$target,$period," "$PERIOD_DURATION_DB" | cut -d',' -f3)
         local total_used=$(grep "^$target,$period," "$PERIOD_DURATION_DB" | cut -d',' -f4)
         local last_reset=$(grep "^$target,$period," "$PERIOD_DURATION_DB" | cut -d',' -f5)
         
         if [ "$action" = "allow" ]; then
-            # 如果之前是断开状态（last_connect == 0），则开始计时
             if [ -z "$last_connect" ] || [ "$last_connect" -eq 0 ]; then
                 last_connect=$current_time
             fi
-            # 如果之前已是连接状态，则更新 last_connect 为当前时间（连续计时）
-            # 但为了精确，我们只在允许时累加会话时长，这里不累加，由 get_period_used 动态计算
             sed -i "/^$target,$period,/d" "$PERIOD_DURATION_DB"
             echo "$target,$period,$last_connect,$total_used,$last_reset" >> "$PERIOD_DURATION_DB"
         else
-            # deny: 断开连接，如果之前是连接状态，则累计时长（但 get_period_used 会动态累加，我们这里只将 last_connect 置0）
             if [ -n "$last_connect" ] && [ "$last_connect" -gt 0 ]; then
-                # 累加从 last_connect 到现在的时长
                 local session=$((current_time - last_connect))
                 [ "$session" -gt 0 ] && total_used=$((total_used + session))
                 last_connect=0
@@ -235,7 +224,6 @@ update_period_state() {
             echo "$target,$period,$last_connect,$total_used,$last_reset" >> "$PERIOD_DURATION_DB"
         fi
     else
-        # 不存在记录，创建新记录
         if [ "$action" = "allow" ]; then
             echo "$target,$period,$current_time,0,0" >> "$PERIOD_DURATION_DB"
         else
@@ -244,7 +232,6 @@ update_period_state() {
     fi
 }
 
-# 重置某个时段计数器
 reset_period_counter() {
     local target="$1"
     local period="$2"
@@ -259,12 +246,10 @@ reset_period_counter() {
     
     sed -i "/^$target,$period,/d" "$PERIOD_DURATION_DB" 2>/dev/null
     echo "$target,$period,0,0,$current_time" >> "$PERIOD_DURATION_DB"
-    # 存储该时段的重置标记（独立存储）
     echo "$reset_value" > "$DURATION_DIR/last_reset_${target}_period${period}"
     info "重置时段$period 时长: $target (周期: $reset_cycle)"
 }
 
-# 检查是否需要重置某个时段
 should_reset_period() {
     local target="$1"
     local period="$2"
@@ -294,14 +279,97 @@ should_reset_period() {
     esac
 }
 
-# ============= 主检查函数 =============
+# ============= 流量感知功能 =============
+
+# 读取流量感知配置
+read_traffic_config() {
+    uci_load_tmp=$(uci show timecontrol 2>/dev/null)
+    local enabled=$(uci -q get timecontrol.timecontrol.traffic_aware_enabled)
+    if [ -z "$enabled" ]; then
+        uci set timecontrol.timecontrol.traffic_aware_enabled="0"
+        uci set timecontrol.timecontrol.traffic_threshold="100"
+        uci set timecontrol.timecontrol.traffic_consecutive="3"
+        uci set timecontrol.timecontrol.traffic_poll_interval="30"
+        uci commit timecontrol
+        enabled="0"
+    fi
+    TRAFFIC_ENABLED="${enabled:-0}"
+    TRAFFIC_THRESHOLD_KB="$(uci -q get timecontrol.timecontrol.traffic_threshold || echo 100)"
+    TRAFFIC_CONSECUTIVE="$(uci -q get timecontrol.timecontrol.traffic_consecutive || echo 3)"
+    TRAFFIC_POLL_INTERVAL="$(uci -q get timecontrol.timecontrol.traffic_poll_interval || echo 30)"
+    export TRAFFIC_ENABLED TRAFFIC_THRESHOLD_KB TRAFFIC_CONSECUTIVE TRAFFIC_POLL_INTERVAL
+}
+
+# 获取设备流量累计值（t_rx_b + t_tx_b）
+get_device_traffic_total() {
+    local mac="$1"
+    [ -z "$mac" ] && echo "0" && return 1
+    local mac_lower=$(echo "$mac" | tr '[:upper:]' '[:lower:]')
+    local total=$(ubus call luci.bandix getStatus 2>/dev/null | jq -r ".d[] | select(.mac == \"$mac_lower\") | (.t_rx_b // 0) + (.t_tx_b // 0)")
+    if [ -z "$total" ] || [ "$total" = "null" ]; then
+        echo "0"
+        return 0
+    fi
+    echo "$total"
+}
+
+# 更新流量状态并返回是否活跃（增强日志）
+update_traffic_state() {
+    local mac="$1"
+    local state_file="$TRAFFIC_STATE_DIR/$(echo "$mac" | tr '[:upper:]' '[:lower:]').state"
+    local current_total=$(get_device_traffic_total "$mac")
+    local last_total=0
+    local consecutive=0
+    
+    # 读取旧状态
+    if [ -f "$state_file" ]; then
+        local old_data=$(cat "$state_file")
+        last_total=$(echo "$old_data" | cut -d'|' -f1)
+        consecutive=$(echo "$old_data" | cut -d'|' -f2)
+        [ -z "$last_total" ] && last_total=0
+        [ -z "$consecutive" ] && consecutive=0
+    fi
+    
+    # 计算增量（字节）
+    local delta=$((current_total - last_total))
+    local threshold_bytes=$((TRAFFIC_THRESHOLD_KB * 1024))
+    
+    # ★★★ 日志：记录关键数据 ★★★
+    dbg "流量检测: MAC=$mac, 当前累计=$current_total, 上次累计=$last_total, 增量=${delta}B, 阈值=${TRAFFIC_THRESHOLD_KB}KB(${threshold_bytes}B), 之前连续次数=$consecutive"
+    
+    # 更新连续计数
+    if [ "$delta" -gt "$threshold_bytes" ]; then
+        consecutive=$((consecutive + 1))
+        dbg "流量检测: $mac 增量超过阈值，连续次数增至 $consecutive"
+    else
+        if [ "$consecutive" -gt 0 ]; then
+            dbg "流量检测: $mac 增量未达阈值，连续次数重置为 0（之前为 $consecutive）"
+        fi
+        consecutive=0
+    fi
+    
+    # 写入新状态
+    echo "${current_total}|${consecutive}" > "$state_file"
+    
+    # 判断是否达到连续要求
+    local active=0
+    if [ "$consecutive" -ge "$TRAFFIC_CONSECUTIVE" ]; then
+        active=1
+        dbg "流量检测: $mac 连续 $consecutive 次超过阈值，判定为活跃"
+    else
+        dbg "流量检测: $mac 连续次数 $consecutive 未达要求 ${TRAFFIC_CONSECUTIVE}，判定为不活跃"
+    fi
+    
+    echo "$active"
+}
+
+# ============= 主检查函数（未变） =============
 check_device_control() {
     local id="$1"
     local target=$(config_t_get device mac "$id")
     local time_mode=$(config_t_get device time_mode "$id" "period")
     local weekdays=$(config_t_get device week "$id" "0")
     
-    # 检查星期
     is_weekday_in_range "$weekdays" || {
         dbg "星期不允许: $target"
         return 1
@@ -318,7 +386,6 @@ check_device_control() {
             dbg "时间段内: $target"
             return 0
             ;;
-            
         "duration")
             local duration=$(config_t_get device duration "$id" "60")
             local reset_cycle=$(config_t_get device reset_cycle "$id" "daily")
@@ -345,7 +412,6 @@ check_device_control() {
             dbg "未超时: $target"
             return 0
             ;;
-            
         "combined")
             local start_time=$(config_t_get device timestart "$id" "00:00")
             local end_time=$(config_t_get device timeend "$id" "00:00")
@@ -382,27 +448,22 @@ check_device_control() {
             dbg "时间段内允许: $target"
             return 0
             ;;
-            
-        # ============ [新增] 多时段控制 ============
         "multi_period")
             local reset_cycle=$(config_t_get device reset_cycle "$id" "daily")
             local in_any_period=0
             
-            # 遍历3个时段
             for p in 1 2 3; do
                 local start=$(config_t_get device "period${p}_start" "$id" "")
                 local end=$(config_t_get device "period${p}_end" "$id" "")
                 local dur=$(config_t_get device "period${p}_duration" "$id" "")
-                [ -z "$start" ] && continue  # 未配置则跳过
+                [ -z "$start" ] && continue
                 
                 if is_time_in_range "$start" "$end"; then
                     in_any_period=1
-                    # 检查该时段是否需要重置
                     if should_reset_period "$target" "$p" "$reset_cycle"; then
                         reset_period_counter "$target" "$p" "$reset_cycle"
                     fi
                     
-                    # 获取当前已用分钟数（秒数转分钟）
                     local used_seconds=$(get_period_used "$target" "$p")
                     local used_minutes=$((used_seconds / 60))
                     
@@ -410,32 +471,24 @@ check_device_control() {
                     
                     if [ "$used_minutes" -ge "$dur" ]; then
                         dbg "时段$p 已超时: $target"
-                        # 将该时段状态置为 deny（避免继续累加）
                         update_period_state "$target" "$p" "deny"
                         return 1
                     else
-                        # 未超时，将状态置为 allow（开始或继续计时）
                         update_period_state "$target" "$p" "allow"
-                        # 如果设备当前被阻止，需要允许，由上层 update_device_status 处理
-                        # 这里返回0表示允许
                         dbg "时段$p 允许: $target"
                         return 0
                     fi
                 else
-                    # 不在该时段，确保状态为 deny（不累计时间）
                     update_period_state "$target" "$p" "deny"
                 fi
             done
             
-            # 所有时段都不匹配
             if [ "$in_any_period" -eq 0 ]; then
                 dbg "不在任何时段: $target"
             fi
             return 1
             ;;
-            
         *)
-            # 默认时间段控制
             local start_time=$(config_t_get device timestart "$id" "00:00")
             local end_time=$(config_t_get device timeend "$id" "00:00")
             is_time_in_range "$start_time" "$end_time"
@@ -444,14 +497,13 @@ check_device_control() {
     esac
 }
 
-# 更新设备状态
+# 更新防火墙状态
 update_device_status() {
     local id="$1"
     local should_allow="$2"  # 0=允许, 1=禁止
     local target=$(config_t_get device mac "$id")
     local comment=$(config_t_get device comment "$id" "设备$id")
     
-    # 检查当前状态
     local current_blocked=0
     if [ -f "$IDLIST" ] && grep -q "!${id}!" "$IDLIST" 2>/dev/null; then
         current_blocked=1
@@ -465,8 +517,6 @@ update_device_status() {
             timecontrol del "$id"
             sed -i "/!$id!/d" "$IDLIST" 2>/dev/null
             info "允许上网: $comment ($target)"
-            # 原有单时段记录断开（仅用于兼容）
-            record_connection_time "$target" "disconnect"
         fi
     else
         if [ "$current_blocked" -eq 0 ]; then
@@ -481,28 +531,32 @@ update_device_status() {
     fi
 }
 
-
-# ============= 主循环（流量感知版） =============
+# ============= 主循环（流量感知版，增强日志） =============
 main_loop() {
     info "时间控制守护进程启动"
     init_dirs
-    read_traffic_config  # 读取配置
+    read_traffic_config
     info "流量感知: $([ "$TRAFFIC_ENABLED" = "1" ] && echo "启用" || echo "禁用")"
     info "阈值: ${TRAFFIC_THRESHOLD_KB}KB, 连续次数: ${TRAFFIC_CONSECUTIVE}, 轮询间隔: ${TRAFFIC_POLL_INTERVAL}s"
     
     while :; do
-        dbg "开始检查设备"
+        dbg "========== 开始新一轮检查 =========="
         count=$(uci show "$NAME" 2>/dev/null | grep "enable='1'" | grep "device" | grep -oE '\[[0-9]+\]' | grep -oE '[0-9]+' | sort -n | wc -l)
         if [ "${count:-0}" -eq 0 ]; then
+            info "无启用设备，停止守护进程"
             timecontrol stop
             break
         fi
         
         for id in $(get_enabled_devices); do
             local target=$(config_t_get device mac "$id")
-            local allow=$(check_device_control "$id"; echo $?)   # 0允许，1禁止
+            dbg "处理设备: ID=$id, MAC=$target"
             
-            # 更新防火墙规则
+            # 1. 检查时段和时长
+            local allow=$(check_device_control "$id"; echo $?)   # 0允许，1禁止
+            dbg "设备 $target 允许上网: $([ "$allow" -eq 0 ] && echo "是" || echo "否")"
+            
+            # 2. 更新防火墙规则
             if [ "$allow" -eq 0 ]; then
                 update_device_status "$id" 0
             else
@@ -511,34 +565,39 @@ main_loop() {
             
             # 如果设备被禁止上网，无需流量检测（已经断开计时）
             if [ "$allow" -ne 0 ]; then
+                dbg "设备 $target 被禁止上网，跳过流量检测"
                 continue
             fi
             
-            # 如果流量感知未启用，则不做额外处理（计时由 check_device_control 中的 record_connection_time 管理）
+            # 如果流量感知未启用，则不做额外处理
             if [ "$TRAFFIC_ENABLED" = "0" ]; then
+                dbg "流量感知未启用，跳过"
                 continue
             fi
             
             # === 流量感知逻辑 ===
             local is_active=$(update_traffic_state "$target")
             local current_conn=$(grep ",$target," "$CONNECTION_LOG" 2>/dev/null | tail -1 | cut -d',' -f3)
+            dbg "设备 $target 流量活跃: $([ "$is_active" = "1" ] && echo "是" || echo "否"), 当前连接状态: ${current_conn:-无}"
             
             if [ "$is_active" = "1" ]; then
-                # 活跃，若未连接则开始计时
                 if [ "$current_conn" != "connect" ]; then
                     dbg "设备 $target 流量活跃，开始计时"
                     record_connection_time "$target" "connect"
+                else
+                    dbg "设备 $target 流量活跃，已连接，保持计时"
                 fi
             else
-                # 不活跃，若已连接则暂停计时
                 if [ "$current_conn" = "connect" ]; then
                     dbg "设备 $target 流量不活跃，暂停计时"
                     record_connection_time "$target" "disconnect"
+                else
+                    dbg "设备 $target 流量不活跃，未连接，无需操作"
                 fi
             fi
         done
         
-        # 使用配置的轮询间隔
+        dbg "本轮检查完成，等待 ${TRAFFIC_POLL_INTERVAL} 秒"
         sleep "${TRAFFIC_POLL_INTERVAL:-30}"
     done
 }
