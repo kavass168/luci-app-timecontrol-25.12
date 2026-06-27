@@ -2,41 +2,45 @@
 set -e
 
 REPO="kavass168/luci-app-timecontrol-25.12"
-TAG="main-luci-app-timecontrol"
 
-echo "正在获取 Release 文件列表..."
-# 获取 Release 页面的 HTML，提取所有 .apk 文件名
-PAGE_URL="https://github.com/${REPO}/releases/tag/${TAG}"
-APK_NAMES=$(uclient-fetch -qO- "$PAGE_URL" 2>/dev/null | \
-    grep -o 'href="[^"]*\.apk"' | \
-    sed 's/href="\/[^\/]*\/[^\/]*\/releases\/download\/[^\/]*\///;s/"//' | \
-    sort -u)
+echo "正在获取最新 Release..."
+# 与你的原始脚本完全相同，获取最新 Release 的 tag_name
+TAG=$(uclient-fetch -qO- "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+  | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
 
-if [ -z "$APK_NAMES" ]; then
-    echo "错误：未找到任何 .apk 文件。"
-    echo "请检查 Release 页面：$PAGE_URL"
-    exit 1
-fi
+[ -n "$TAG" ] || { echo "错误：无法获取最新 Release"; exit 1; }
 
-echo "找到以下 .apk 文件："
-echo "$APK_NAMES"
-
-# 筛选主包和语言包
-MAIN_FILE=$(echo "$APK_NAMES" | grep '^luci-app-timecontrol-.*\.apk$' | head -1)
-LANG_FILE=$(echo "$APK_NAMES" | grep '^luci-i18n-timecontrol-zh-cn-.*\.apk$' | head -1)
-
-if [ -z "$MAIN_FILE" ] || [ -z "$LANG_FILE" ]; then
-    echo "错误：未找到主包或语言包。"
-    exit 1
-fi
-
+echo "最新标签：$TAG"
 BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
 
-echo "下载主包：$MAIN_FILE"
-uclient-fetch -qO /tmp/main.apk "$BASE_URL/$MAIN_FILE"
+# ----- 关键改进：直接从该 Release 的 assets 中提取文件名 -----
+# 调用 /releases/tags/{tag} 获取该标签下的所有 asset 信息
+ASSETS_JSON=$(uclient-fetch -qO- "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" 2>/dev/null)
 
-echo "下载语言包：$LANG_FILE"
-uclient-fetch -qO /tmp/lang.apk "$BASE_URL/$LANG_FILE"
+# 提取所有 .apk 的下载 URL（用 grep 和 sed 解析）
+APK_URLS=$(echo "$ASSETS_JSON" | grep -o '"browser_download_url":"[^"]*\.apk"' | sed 's/"browser_download_url":"//;s/"//')
+
+if [ -z "$APK_URLS" ]; then
+    echo "错误：该 Release 中没有 .apk 文件。"
+    exit 1
+fi
+
+# 筛选出主包和语言包（按文件名模式）
+MAIN_URL=$(echo "$APK_URLS" | grep 'luci-app-timecontrol-.*\.apk' | head -1)
+LANG_URL=$(echo "$APK_URLS" | grep 'luci-i18n-timecontrol-zh-cn-.*\.apk' | head -1)
+
+if [ -z "$MAIN_URL" ] || [ -z "$LANG_URL" ]; then
+    echo "错误：未找到主包或语言包。"
+    echo "可用的 .apk 文件："
+    echo "$APK_URLS"
+    exit 1
+fi
+
+echo "下载主包：$(basename "$MAIN_URL")"
+uclient-fetch -qO /tmp/main.apk "$MAIN_URL"
+
+echo "下载语言包：$(basename "$LANG_URL")"
+uclient-fetch -qO /tmp/lang.apk "$LANG_URL"
 
 echo "安装（跳过签名验证）..."
 apk add --allow-untrusted /tmp/main.apk /tmp/lang.apk
