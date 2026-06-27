@@ -115,7 +115,7 @@ jobs:
       - name: Release Firmware
         uses: softprops/action-gh-release@master
         with:
-          tag_name: ${{ github.ref_name }}-${{ github.event.inputs.PLUGIN_NAME }}
+          tag_name: ${{ github.event.inputs.PLUGIN_NAME }}
           files: ${{ env.SDK_DIR }}/upload/*.apk
           body: |
             编译完成，未测试！
