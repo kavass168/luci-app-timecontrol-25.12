@@ -1,19 +1,11 @@
-## 访问数：![hello](https://views.whatilearened.today/views/github/sirpdboy/deplives.svg)[![](https://img.shields.io/badge/TG群-点击加入-FFFFFF.svg)](https://t.me/joinchat/AAAAAEpRF88NfOK5vBXGBQ)
-
-
-[timecontrol  上网时间控制插件](https://github.com/sirpdboy/luci-app-timecontrol)
-
-<p align="center">
-<a href="https://openwrt.org"><img alt="OpenWrt" src="https://img.shields.io/badge/OpenWrt-%E2%89%A519.07-ff0000?logo=openwrt&logoColor=white"></a>
-<a href="https://www.google.com/chrome/"><img alt="Chrome" src="https://img.shields.io/badge/Chrome-%E2%89%A5111-4285F3?logo=googlechrome&logoColor=white"></a>
-<a href="https://www.apple.com/safari/"><img alt="Safari" src="https://img.shields.io/badge/Safari-%E2%89%A516.4-000000?logo=safari&logoColor=white"></a>
-<a href="https://www.mozilla.org/firefox/"><img alt="Firefox" src="https://img.shields.io/badge/Firefox-%E2%89%A5128-FF7138?logo=firefoxbrowser&logoColor=white"></a>
-<a target="_blank" href="https://github.com/sirpdboy/luci-app-timecontrol/releases"> <img alt="GitHub release" src="https://img.shields.io/github/v/release/sirpdboy/luci-app-timecontrol"></a>
-<a href="https://github.com/sirpdboy/luci-app-timecontrol/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/sirpdboy/luci-app-timecontrol/total"></a>
-</p>
-
-![screenshots](https://raw.githubusercontent.com/sirpdboy/openwrt/master/doc/说明1.jpg)
-
+> 由于 OpenWrt 25.12 开始使用 `apk` 包管理器，
+> 本项目目前以 **未签名的 APK** 形式发布。
+>
+> 一键安装命令（仅限 `25.12` 以上）：
+> ```
+> uclient-fetch -qO- https://github.com/kavass168/luci-app-timecontrol-25.12/edit/main/install.sh | sh
+> ```
+> 
 请 **认真阅读完毕** 本页面，本页面包含注意事项和如何使用。
 
 ## 功能说明：
