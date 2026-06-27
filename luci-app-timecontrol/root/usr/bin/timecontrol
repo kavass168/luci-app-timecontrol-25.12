@@ -4,8 +4,7 @@
 # 适配 ImmortalWrt 25.12 (busybox ash)
 #
 # Copyright (C) 2022-2026 sirpdboy <herboy2008@gmail.com>
-# 修复版本：移除 iptables，支持黑白名单，增强连接清理，增加锁机制
-# 新增：手动重置、已用时长查询
+# 修复：重置功能彻底可用（移除 case 中 local，改用 cat 覆盖文件）
 
 crrun=$1
 crid=$2
@@ -23,11 +22,11 @@ config_t_get() {
 LOG_FILE="/var/log/timecontrol.log"
 IDLIST="/var/$NAME.idlist"
 
-# 时长数据库路径
 DURATION_DIR="/var/lib/timecontrol"
 DURATION_DB="$DURATION_DIR/duration.db"
 PERIOD_DURATION_DB="$DURATION_DIR/period_duration.db"
 TRAFFIC_STATE_DIR="$DURATION_DIR/traffic_state"
+CONNECTION_LOG="$DURATION_DIR/connections.log"
 
 bin_nft=$(which nft 2>/dev/null)
 [ -x "$bin_nft" ] || {
@@ -353,50 +352,77 @@ EOF
     esac
 }
 
-# ===== 新增：手动重置设备时长（增强版：清除流量状态文件） =====
+# ===== 重置设备时长（最终修复版） =====
 reset_device() {
     local id="$1"
     local period="${2:-all}"
     local target=$(config_t_get device mac "$id")
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] RESET_DEVICE called: id=$id, period=$period, target=$target" >> "$LOG_FILE"
+    
     [ -z "$target" ] && {
         echo "错误: 设备 ID $id 不存在"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] RESET_DEVICE FAILED: target is empty" >> "$LOG_FILE"
         return 1
     }
     
-    info "手动重置设备 $target 的时长 (时段: $period)"
+    local time_mode=$(config_t_get device time_mode "$id" "period")
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] RESET_DEVICE: time_mode=$time_mode" >> "$LOG_FILE"
+    info "手动重置设备 $target 的时长 (时段: $period, 模式: $time_mode)"
     mkdir -p "$DURATION_DIR"
     mkdir -p "$TRAFFIC_STATE_DIR"
-    
-    if [ "$period" = "all" ]; then
-        for p in 1 2 3; do
-            sed -i "/^$target,$p,/d" "$PERIOD_DURATION_DB" 2>/dev/null
-            rm -f "$DURATION_DIR/last_reset_${target}_period${p}" 2>/dev/null
-            echo "$target,$p,0,0,0" >> "$PERIOD_DURATION_DB"
-            dbg "时段$p 已重置"
-        done
-        sed -i "/^$target,/d" "$DURATION_DB" 2>/dev/null
-        rm -f "$DURATION_DIR/last_reset_$target" 2>/dev/null
-        # ★★★ 清除流量状态文件 ★★★
-        rm -f "$TRAFFIC_STATE_DIR/$(echo "$target" | tr '[:upper:]' '[:lower:]').state"
-        info "所有时段已重置，流量状态文件已清除"
-    else
-        if [ "$period" -ge 1 ] && [ "$period" -le 3 ]; then
-            sed -i "/^$target,$period,/d" "$PERIOD_DURATION_DB" 2>/dev/null
-            rm -f "$DURATION_DIR/last_reset_${target}_period${period}" 2>/dev/null
-            echo "$target,$period,0,0,0" >> "$PERIOD_DURATION_DB"
-            rm -f "$TRAFFIC_STATE_DIR/$(echo "$target" | tr '[:upper:]' '[:lower:]').state"
-            info "时段$period 已重置，流量状态文件已清除"
-        else
-            echo "错误: 时段号必须为1-3或all"
-            return 1
-        fi
-    fi
-    
+
+    rm -f "$TRAFFIC_STATE_DIR/$(echo "$target" | tr '[:upper:]' '[:lower:]').state"
+    sed -i "/,$target,/d" "$CONNECTION_LOG" 2>/dev/null
+
+    case "$time_mode" in
+        "period")
+            sed -i "/^$target,/d" "$DURATION_DB" 2>/dev/null
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] RESET_DEVICE: reset period mode" >> "$LOG_FILE"
+            ;;
+        "duration"|"combined")
+            sed -i "/^$target,/d" "$DURATION_DB" 2>/dev/null
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] RESET_DEVICE: reset duration/combined mode" >> "$LOG_FILE"
+            ;;
+        "multi_period")
+            if [ "$period" = "all" ]; then
+                # 使用 grep -vF 生成临时文件，然后用 cat 覆盖原文件
+                grep -vF "$target," "$PERIOD_DURATION_DB" > "${PERIOD_DURATION_DB}.tmp" 2>/dev/null
+                cat "${PERIOD_DURATION_DB}.tmp" > "$PERIOD_DURATION_DB"
+                rm -f "${PERIOD_DURATION_DB}.tmp"
+                for p in 1 2 3; do
+                    echo "$target,$p,0,0,0" >> "$PERIOD_DURATION_DB"
+                    rm -f "$DURATION_DIR/last_reset_${target}_period${p}" 2>/dev/null
+                done
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] RESET_DEVICE: reset all periods (cat覆盖)" >> "$LOG_FILE"
+            else
+                if [ "$period" -ge 1 ] && [ "$period" -le 3 ]; then
+                    grep -vF "$target,$period," "$PERIOD_DURATION_DB" > "${PERIOD_DURATION_DB}.tmp" 2>/dev/null
+                    cat "${PERIOD_DURATION_DB}.tmp" > "$PERIOD_DURATION_DB"
+                    rm -f "${PERIOD_DURATION_DB}.tmp"
+                    echo "$target,$period,0,0,0" >> "$PERIOD_DURATION_DB"
+                    rm -f "$DURATION_DIR/last_reset_${target}_period${period}" 2>/dev/null
+                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] RESET_DEVICE: reset period $period (cat覆盖)" >> "$LOG_FILE"
+                else
+                    echo "错误: 时段号必须为1-3或all"
+                    echo "[$(date '+%Y-%m-%d %H:%M:%S')] RESET_DEVICE FAILED: invalid period $period" >> "$LOG_FILE"
+                    return 1
+                fi
+            fi
+            touch "$PERIOD_DURATION_DB"
+            ;;
+        *)
+            echo "未知模式，仅清除流量状态和连接日志"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] RESET_DEVICE: unknown time_mode $time_mode" >> "$LOG_FILE"
+            ;;
+    esac
+
     echo "重置成功，时间控制将在下一分钟生效"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] RESET_DEVICE SUCCESS" >> "$LOG_FILE"
     return 0
 }
 
-# ===== 新增：获取设备已用时长 =====
+# ===== 获取设备已用时长 =====
 get_device_usage() {
     local id="$1"
     local period="$2"
@@ -546,12 +572,13 @@ case "$crrun" in
         sed -i "/!$crid!/d" "$IDLIST" 2>/dev/null
         show_firewall_status
         ;;
+    # ★★★ 修复：移除 local 关键字 ★★★
     "reset")
         [ -z "$crid" ] && {
             echo "错误: 需要指定设备ID"
             exit 1
         }
-        local period="${3:-all}"
+        period="${3:-all}"   # ★★★ 去掉 local ★★★
         reset_device "$crid" "$period"
         ;;
     "getusage")
@@ -559,7 +586,7 @@ case "$crrun" in
             echo "错误: 需要指定设备ID"
             exit 1
         }
-        local period="${3:-all}"
+        period="${3:-all}"   # ★★★ 去掉 local ★★★
         get_device_usage "$crid" "$period"
         ;;
     "status")
