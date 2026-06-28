@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# 时间控制防火墙管理脚本（仅 nftables）
+# 时间控制防火墙管理脚本（仅 nftables）V3.4.2
 # 适配 ImmortalWrt 25.12 (busybox ash)
 #
 # Copyright (C) 2022-2026 sirpdboy <herboy2008@gmail.com>
@@ -516,6 +516,14 @@ diagnose() {
 }
 
 # ---------- 主命令处理 ----------
+# 对 getusage 特殊处理：不进行锁检查，允许并发查询
+if [ "$crrun" = "getusage" ]; then
+    [ -z "$crid" ] && { echo "错误: 需要指定设备ID"; exit 1; }
+    period="${3:-all}"
+    get_device_usage "$crid" "$period"
+    exit $?
+fi
+
 exec 200>"$LOCK_FILE"
 flock -n 200 || {
     echo "另一个实例正在运行，退出"
