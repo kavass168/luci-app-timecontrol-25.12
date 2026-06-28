@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 /*
- * 上网时间控制 - 修复版 v3.3.18-fix-modal-display
- * 修复：编辑模态框中控制模式、重置周期、星期、启用显示与配置不一致
+ * 上网时间控制 - 修复版 v3.4.1
+ * 修复多时段默认值问题；调整布局；更新描述；阈值默认300KB
  */
 'use strict';
 'require view';
@@ -13,7 +13,7 @@
 'require rpc';
 'require network';
 
-const VERSION = "v3.3.18-fix-modal-display";
+const VERSION = "v3.4.1";
 const NOTIFY_TIMEOUT = 5000;
 
 function debugLog(msg, obj) {
@@ -28,7 +28,6 @@ function showTip(msg, type) {
     ui.addNotification(null, E('p', msg), type, NOTIFY_TIMEOUT);
 }
 
-// 统一执行UCI持久化提交
 function uciCommitConfig() {
     debugLog('执行系统命令: uci commit timecontrol');
     return fs.exec_direct('/sbin/uci', ['commit', 'timecontrol'])
@@ -55,7 +54,8 @@ function uciCommitConfig() {
         .tc-table th { background: #f0f0f0; padding: 10px 8px; text-align: left; white-space: nowrap; border-bottom: 2px solid #ccc; font-size: 15px; }
         .tc-table td { padding: 8px; border-bottom: 1px solid #e0e0e0; vertical-align: middle; font-size: 15px; }
         .tc-table tr:hover { background: #f9f9f9; }
-        .tc-table .comment-cell { max-width: 160px; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+        /* ★★★ 修改点1：备注列内容居中 ★★★ */
+        .tc-table .comment-cell { max-width: 160px; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; text-align: center; }
         .tc-table .mac-cell { min-width: 170px; }
         .tc-table .mode-cell { min-width: 120px; }
         .tc-table .duration-cell { min-width: 110px; }
@@ -103,6 +103,12 @@ function uciCommitConfig() {
         #version-tip { background: #e7f3ff; padding: 10px; border: 1px solid #b3d8ff; border-radius: 4px; margin-bottom: 10px; font-size: 15px; }
         #version-tip strong { color: #0066cc; font-size: 16px; }
         #version-tip small { color: #333; font-size: 14px; }
+        .traffic-settings { margin-top: 15px; border-top: 1px solid #ddd; padding-top: 15px; }
+        .traffic-settings label { margin-right: 8px; }
+        .traffic-settings input[type="number"] { width: 70px; margin-right: 15px; }
+        .traffic-settings .btn-save-traffic { margin-top: 10px; }
+        .traffic-settings .hint { font-size: 12px; color: #666; margin-top: 5px; }
+        .btn-restart { margin-top: 10px; }
     `;
     document.head.appendChild(style);
     debugLog('全局样式注入完成');
@@ -127,7 +133,6 @@ function getDeviceById(id) {
     return dev;
 }
 
-// 设备保存，串行执行save+系统commit
 function saveDevice(section, data) {
     debugLog('开始保存设备配置, section=' + (section || '新建'));
     return uci.load('timecontrol').then(function() {
@@ -154,7 +159,6 @@ function saveDevice(section, data) {
     });
 }
 
-// 删除设备，串行执行save+系统commit
 function deleteDevice(section) {
     debugLog('开始删除设备节: ' + section);
     if (!section) {
@@ -192,7 +196,6 @@ function deleteDevice(section) {
     });
 }
 
-// 初始化全局配置节
 function ensureGlobalSection() {
     return fs.exec_direct('/sbin/uci', ['get', 'timecontrol.timecontrol'])
         .then(function() {
@@ -209,16 +212,28 @@ function ensureGlobalSection() {
                     return fs.exec_direct('/sbin/uci', ['set', 'timecontrol.timecontrol.chain=forward']);
                 })
                 .then(function() {
+                    // ★★★ 修改点2：流量感知阈值默认改为300 ★★★
+                    return fs.exec_direct('/sbin/uci', ['set', 'timecontrol.timecontrol.traffic_aware_enabled=0']);
+                })
+                .then(function() {
+                    return fs.exec_direct('/sbin/uci', ['set', 'timecontrol.timecontrol.traffic_threshold=300']);
+                })
+                .then(function() {
+                    return fs.exec_direct('/sbin/uci', ['set', 'timecontrol.timecontrol.traffic_consecutive=3']);
+                })
+                .then(function() {
+                    return fs.exec_direct('/sbin/uci', ['set', 'timecontrol.timecontrol.traffic_poll_interval=30']);
+                })
+                .then(function() {
                     return fs.exec_direct('/sbin/uci', ['commit', 'timecontrol']);
                 })
                 .then(function() {
-                    debugLog('全局配置节初始化完成');
+                    debugLog('全局配置节初始化完成（含流量感知默认值）');
                     return true;
                 });
         });
 }
 
-// 读取全局配置，增加 trim 处理
 function getGlobalSetting(key, def) {
     var val = uci.get('timecontrol', 'timecontrol', key);
     if (val !== undefined && val !== null) {
@@ -231,7 +246,6 @@ function getGlobalSetting(key, def) {
     return def;
 }
 
-// 保存全局配置
 function setGlobalSetting(key, value) {
     debugLog('保存全局设置: ' + key + '=' + value);
     return uci.load('timecontrol').then(function() {
@@ -287,7 +301,7 @@ function checkTimeControlProcess() {
     }).catch(function() { return { running: false, pid: null }; });
 }
 
-// ===== 构建编辑模态框（修复下拉框显示） =====
+// ===== 构建编辑模态框 =====
 function buildModal(title, data, hosts) {
     data = data || {};
     var isEdit = !!data['.name'];
@@ -304,21 +318,20 @@ function buildModal(title, data, hosts) {
         use_duration: '0',
         reset_cycle: 'daily',
         week: '0',
-        period1_start: '00:00',
-        period1_end: '00:00',
-        period1_duration: '60',
-        period2_start: '00:00',
-        period2_end: '00:00',
-        period2_duration: '60',
-        period3_start: '00:00',
-        period3_end: '00:00',
-        period3_duration: '60'
+        period1_start: '',
+        period1_end: '',
+        period1_duration: '',
+        period2_start: '',
+        period2_end: '',
+        period2_duration: '',
+        period3_start: '',
+        period3_end: '',
+        period3_duration: ''
     };
     var config = {};
     Object.keys(defaults).forEach(function(k) {
         config[k] = data[k] !== undefined ? data[k] : defaults[k];
     });
-    // ★★★ 对字符串值进行 trim，避免空格干扰 ★★★
     if (typeof config.time_mode === 'string') config.time_mode = config.time_mode.trim();
     if (typeof config.reset_cycle === 'string') config.reset_cycle = config.reset_cycle.trim();
     if (typeof config.week === 'string') config.week = config.week.trim();
@@ -332,23 +345,20 @@ function buildModal(title, data, hosts) {
 
     var formBox = E('div');
 
-    // 备注
     var group1 = E('div', { class: 'form-group' });
     group1.appendChild(E('label', {}, _('备注')));
     group1.appendChild(E('input', { id: 'edit-comment', type: 'text', value: config.comment, placeholder: _('设备描述') }));
     formBox.appendChild(group1);
 
-    // ★★★ 启用（修复：移除 selected，使用 value） ★★★
     var group2 = E('div', { class: 'form-group' });
     group2.appendChild(E('label', {}, _('启用')));
     var enableSelect = E('select', { id: 'edit-enable' });
     enableSelect.appendChild(E('option', { value: '1' }, _('是')));
     enableSelect.appendChild(E('option', { value: '0' }, _('否')));
-    enableSelect.value = config.enable; // ★ 强制设置
+    enableSelect.value = config.enable;
     group2.appendChild(enableSelect);
     formBox.appendChild(group2);
 
-    // MAC/IP + 设备选择
     var group3 = E('div', { class: 'form-group' });
     group3.appendChild(E('label', {}, _('IP/MAC 地址')));
     var selectContainer = E('div', { class: 'tc-device-select' });
@@ -377,7 +387,6 @@ function buildModal(title, data, hosts) {
     group3.appendChild(selectContainer);
     formBox.appendChild(group3);
 
-    // ★★★ 控制模式（修复：移除 selected，使用 value） ★★★
     var group4 = E('div', { class: 'form-group' });
     group4.appendChild(E('label', {}, _('控制模式')));
     var modeSelect = E('select', { id: 'edit-time_mode' });
@@ -388,18 +397,16 @@ function buildModal(title, data, hosts) {
         { value: 'multi_period', label: _('多时段控制') }
     ];
     modes.forEach(function(m) {
-        var opt = E('option', { value: m.value }, m.label); // ★ 移除 selected
+        var opt = E('option', { value: m.value }, m.label);
         modeSelect.appendChild(opt);
     });
-    modeSelect.value = config.time_mode; // ★ 强制设置
+    modeSelect.value = config.time_mode;
     group4.appendChild(modeSelect);
     formBox.appendChild(group4);
 
-    // 动态字段容器
     var dynamicContainer = E('div', { id: 'dynamic-fields' });
     formBox.appendChild(dynamicContainer);
 
-    // ★★★ 星期（修复：移除 selected，使用 value） ★★★
     var groupWeek = E('div', { class: 'form-group' });
     groupWeek.appendChild(E('label', {}, _('星期')));
     var weekSelect = E('select', { id: 'edit-week' });
@@ -416,14 +423,13 @@ function buildModal(title, data, hosts) {
         { value: '6,7', label: _('休息日') }
     ];
     weekOptions.forEach(function(w) {
-        var opt = E('option', { value: w.value }, w.label); // ★ 移除 selected
+        var opt = E('option', { value: w.value }, w.label);
         weekSelect.appendChild(opt);
     });
-    weekSelect.value = config.week; // ★ 强制设置
+    weekSelect.value = config.week || '0';
     groupWeek.appendChild(weekSelect);
     formBox.appendChild(groupWeek);
 
-    // 动态字段渲染
     function renderDynamicFields(mode) {
         dynamicContainer.innerHTML = '';
         var curMode = mode || document.getElementById('edit-time_mode').value;
@@ -458,7 +464,6 @@ function buildModal(title, data, hosts) {
         }
 
         if (curMode === 'duration' || curMode === 'combined' || curMode === 'multi_period') {
-            // ★★★ 重置周期（修复：移除 selected，使用 value） ★★★
             var gReset = E('div', { class: 'form-group' });
             gReset.appendChild(E('label', {}, _('重置周期')));
             var resetSelect = E('select', { id: 'edit-reset_cycle' });
@@ -469,10 +474,10 @@ function buildModal(title, data, hosts) {
                 { value: 'never', label: _('永不重置 (手动)') }
             ];
             resetOptions.forEach(function(r) {
-                var opt = E('option', { value: r.value }, r.label); // ★ 移除 selected
+                var opt = E('option', { value: r.value }, r.label);
                 resetSelect.appendChild(opt);
             });
-            resetSelect.value = config.reset_cycle; // ★ 强制设置
+            resetSelect.value = config.reset_cycle || 'daily';
             gReset.appendChild(resetSelect);
             dynamicContainer.appendChild(gReset);
         }
@@ -489,17 +494,17 @@ function buildModal(title, data, hosts) {
 
                 var row1 = E('div', { class: 'form-group' });
                 row1.appendChild(E('label', { style: 'width:80px;' }, _('开始')));
-                row1.appendChild(E('input', { id: 'edit-' + prefix + '_start', type: 'text', value: config[prefix + '_start'] || '00:00', placeholder: 'HH:MM', style: 'flex:1;' }));
+                row1.appendChild(E('input', { id: 'edit-' + prefix + '_start', type: 'text', value: config[prefix + '_start'] || '', placeholder: 'HH:MM', style: 'flex:1;' }));
                 periodGroup.appendChild(row1);
 
                 var row2 = E('div', { class: 'form-group' });
                 row2.appendChild(E('label', { style: 'width:80px;' }, _('结束')));
-                row2.appendChild(E('input', { id: 'edit-' + prefix + '_end', type: 'text', value: config[prefix + '_end'] || '00:00', placeholder: 'HH:MM', style: 'flex:1;' }));
+                row2.appendChild(E('input', { id: 'edit-' + prefix + '_end', type: 'text', value: config[prefix + '_end'] || '', placeholder: 'HH:MM', style: 'flex:1;' }));
                 periodGroup.appendChild(row2);
 
                 var row3 = E('div', { class: 'form-group' });
                 row3.appendChild(E('label', { style: 'width:80px;' }, _('时长(分钟)')));
-                row3.appendChild(E('input', { id: 'edit-' + prefix + '_duration', type: 'number', value: config[prefix + '_duration'] || '60', min: 1, style: 'flex:1;' }));
+                row3.appendChild(E('input', { id: 'edit-' + prefix + '_duration', type: 'number', value: config[prefix + '_duration'] || '', min: 1, style: 'flex:1;' }));
                 periodGroup.appendChild(row3);
 
                 dynamicContainer.appendChild(periodGroup);
@@ -514,7 +519,6 @@ function buildModal(title, data, hosts) {
 
     modal.appendChild(formBox);
 
-    // 按钮
     var actions = E('div', { class: 'form-actions' });
     var cancelBtn = E('button', {
         class: 'tc-btn tc-btn-cancel',
@@ -549,9 +553,12 @@ function buildModal(title, data, hosts) {
             if (mode === 'multi_period') {
                 for (var p = 1; p <= 3; p++) {
                     var prefix = 'period' + p;
-                    newData[prefix + '_start'] = document.getElementById('edit-' + prefix + '_start') ? document.getElementById('edit-' + prefix + '_start').value : '';
-                    newData[prefix + '_end'] = document.getElementById('edit-' + prefix + '_end') ? document.getElementById('edit-' + prefix + '_end').value : '';
-                    newData[prefix + '_duration'] = document.getElementById('edit-' + prefix + '_duration') ? document.getElementById('edit-' + prefix + '_duration').value : '';
+                    var start = document.getElementById('edit-' + prefix + '_start') ? document.getElementById('edit-' + prefix + '_start').value : '';
+                    var end = document.getElementById('edit-' + prefix + '_end') ? document.getElementById('edit-' + prefix + '_end').value : '';
+                    var dur = document.getElementById('edit-' + prefix + '_duration') ? document.getElementById('edit-' + prefix + '_duration').value : '';
+                    if (start) newData[prefix + '_start'] = start;
+                    if (end) newData[prefix + '_end'] = end;
+                    if (dur) newData[prefix + '_duration'] = dur;
                 }
             }
 
@@ -614,14 +621,15 @@ return view.extend({
 
         var container = E('div', { class: 'tc-container' });
 
-        // 版本提示
+        // ★★★ 修改点3：更新版本描述 ★★★
         container.appendChild(E('div', { id: 'version-tip' }, [
             E('strong', {}, '上网时间控制 - 修复版 ' + VERSION),
             E('br'),
-            E('small', {}, '修复模态框下拉显示不一致')
+            E('small', {}, 'immortalwrt 25.12 适配专用版本'),
+            E('br'),
+            E('small', {}, '功能：在原有功能的基础上，添加多时段控制模式、流量感知计时增强计时（需安装并启用 bandix 插件，此功能才能生效），测试支持命令：ubus call luci.bandix getStatus，如果有输出MAC信息，就支持')
         ]));
 
-        // 服务状态
         var statusDiv = E('div', { class: 'tc-status' }, _('检查服务状态...'));
         container.appendChild(statusDiv);
         function updateStatus() {
@@ -637,9 +645,10 @@ return view.extend({
         updateStatus();
         poll.add(updateStatus, 5);
 
-        // ===== 全局设置（白名单禁用） =====
+        // ===== 全局设置 =====
         var globalSettings = E('div', { class: 'tc-global-settings' });
 
+        // --- 控制模式 ---
         var listType = getGlobalSetting('list_type', 'blacklist');
         var listGroup = E('span', {});
         listGroup.appendChild(E('label', {}, _('控制模式')));
@@ -664,6 +673,7 @@ return view.extend({
         listGroup.appendChild(listSelect);
         globalSettings.appendChild(listGroup);
 
+        // --- 拦截强度 ---
         var chainType = getGlobalSetting('chain', 'forward');
         var chainGroup = E('span', {});
         chainGroup.appendChild(E('label', {}, _('拦截强度')));
@@ -687,6 +697,159 @@ return view.extend({
         });
         chainGroup.appendChild(chainSelect);
         globalSettings.appendChild(chainGroup);
+
+        // ★★★ 修改点4：重启服务按钮移到拦截强度下方，另起一行 ★★★
+        var restartBtn = E('button', {
+            class: 'tc-btn tc-btn-save btn-restart',
+            click: function() {
+                var btn = this;
+                btn.disabled = true;
+                btn.textContent = _('重启中...');
+                fs.exec_direct('/etc/init.d/timecontrol', ['restart'])
+                    .then(function() {
+                        showTip(_('服务已重启'), 'info');
+                        btn.disabled = false;
+                        btn.textContent = _('重启服务');
+                        setTimeout(function() { location.reload(); }, 500);
+                    })
+                    .catch(function(err) {
+                        console.error('[TimeControl] 重启服务失败:', err);
+                        showTip(_('重启失败：') + err.message, 'error');
+                        btn.disabled = false;
+                        btn.textContent = _('重启服务');
+                    });
+            }
+        }, _('重启服务'));
+        // 插入到 chainGroup 后面（globalSettings 的第三个子元素位置）
+        // 由于 globalSettings 是 E('div')，我们可以在其末尾追加，但为了放在拦截强度下面，我们在 chainGroup 之后插入。
+        // 我们将在 chainGroup 之后直接添加 restartBtn，然后添加 trafficGroup。
+        // 但为了顺序，我们先添加完 chainGroup，再 append restartBtn，再 append trafficGroup。
+        // 目前 globalSettings 包含 listGroup 和 chainGroup，然后我们继续添加 restartBtn 和 trafficGroup。
+        // 由于这里我们尚未 appendChild，我们可以在后面一起 append。
+
+        // 我们先把所有元素准备好，再一次性 append。
+        // 由于我们使用 container.appendChild(globalSettings) 在后面，我们先构建内容。
+        // 为了方便，我们把 restartBtn 和 trafficGroup 都添加到 globalSettings 中。
+        // 但为了顺序，我们先把 restartBtn 添加到 globalSettings（在 chainGroup 后），再把 trafficGroup 添加。
+        // 我们将调整代码：在 chainGroup 之后直接 appendChild(restartBtn)，然后 appendChild(trafficGroup)。
+
+        // 由于 globalSettings 已创建，我们稍后会在添加 trafficGroup 之前添加 restartBtn。
+        // 但这里我们还在构建，我们先创建 trafficGroup 等。
+        // 为了清晰，我们把 restartBtn 的创建放在这里，但实际插入在 chainGroup 之后。
+
+        // 现在继续构建 trafficGroup。
+
+        // --- 流量感知配置 ---
+        // ★★★ 修改点5：阈值默认改为300 ★★★
+        var trafficEnabled = getGlobalSetting('traffic_aware_enabled', '0');
+        var trafficThreshold = getGlobalSetting('traffic_threshold', '300');
+        var trafficConsecutive = getGlobalSetting('traffic_consecutive', '3');
+        var trafficPollInterval = getGlobalSetting('traffic_poll_interval', '30');
+
+        var trafficGroup = E('div', { class: 'traffic-settings' });
+        trafficGroup.appendChild(E('label', { style: 'font-weight:bold;' }, _('流量感知计时')));
+        trafficGroup.appendChild(E('br'));
+
+        var enableCheck = E('input', {
+            id: 'traffic-aware-enabled',
+            type: 'checkbox',
+            checked: trafficEnabled === '1'
+        });
+        trafficGroup.appendChild(E('label', { style: 'margin-right:10px;' }, _('启用')));
+        trafficGroup.appendChild(enableCheck);
+
+        trafficGroup.appendChild(E('label', { style: 'margin-left:15px;' }, _('阈值(KB)')));
+        var thresholdInput = E('input', {
+            id: 'traffic-aware-threshold',
+            type: 'number',
+            value: trafficThreshold,
+            min: 1,
+            style: 'width:70px;'
+        });
+        trafficGroup.appendChild(thresholdInput);
+
+        trafficGroup.appendChild(E('label', { style: 'margin-left:15px;' }, _('连续次数')));
+        var consecutiveInput = E('input', {
+            id: 'traffic-aware-consecutive',
+            type: 'number',
+            value: trafficConsecutive,
+            min: 1,
+            style: 'width:70px;'
+        });
+        trafficGroup.appendChild(consecutiveInput);
+
+        trafficGroup.appendChild(E('label', { style: 'margin-left:15px;' }, _('轮询间隔(秒)')));
+        var intervalInput = E('input', {
+            id: 'traffic-aware-interval',
+            type: 'number',
+            value: trafficPollInterval,
+            min: 5,
+            style: 'width:70px;'
+        });
+        trafficGroup.appendChild(intervalInput);
+
+        trafficGroup.appendChild(E('br'));
+
+        var hint = E('div', { class: 'hint' },
+            _('需安装并启用 bandix 插件，此功能才能生效。')
+        );
+        trafficGroup.appendChild(hint);
+
+        // ★★★ 修改点6：保存流量感知设置按钮仍保留在流量感知区域 ★★★
+        var saveTrafficBtn = E('button', {
+            class: 'tc-btn tc-btn-save btn-save-traffic',
+            click: function() {
+                var enabled = document.getElementById('traffic-aware-enabled').checked ? '1' : '0';
+                var threshold = document.getElementById('traffic-aware-threshold').value;
+                var consecutive = document.getElementById('traffic-aware-consecutive').value;
+                var interval = document.getElementById('traffic-aware-interval').value;
+
+                if (isNaN(threshold) || parseInt(threshold) < 1) {
+                    showTip(_('阈值必须为大于0的整数'), 'error');
+                    return;
+                }
+                if (isNaN(consecutive) || parseInt(consecutive) < 1) {
+                    showTip(_('连续次数必须为大于0的整数'), 'error');
+                    return;
+                }
+                if (isNaN(interval) || parseInt(interval) < 5) {
+                    showTip(_('轮询间隔至少为5秒'), 'error');
+                    return;
+                }
+
+                var btn = this;
+                btn.disabled = true;
+                btn.textContent = _('保存中...');
+
+                var p1 = setGlobalSetting('traffic_aware_enabled', enabled);
+                var p2 = setGlobalSetting('traffic_threshold', threshold);
+                var p3 = setGlobalSetting('traffic_consecutive', consecutive);
+                var p4 = setGlobalSetting('traffic_poll_interval', interval);
+
+                Promise.all([p1, p2, p3, p4])
+                    .then(function() {
+                        return fs.exec_direct('/usr/bin/timecontrol', ['restart']);
+                    })
+                    .then(function() {
+                        showTip(_('流量感知配置已保存并应用'), 'info');
+                        setTimeout(function() { location.reload(); }, 800);
+                    })
+                    .catch(function(err) {
+                        console.error('[TimeControl] 保存流量感知配置失败:', err);
+                        showTip(_('保存失败，请检查系统日志'), 'error');
+                        btn.disabled = false;
+                        btn.textContent = _('保存流量感知设置');
+                    });
+            }
+        }, _('保存流量感知设置'));
+        trafficGroup.appendChild(saveTrafficBtn);
+
+        // ★★★ 现在将 restartBtn 插入到 chainGroup 之后，然后追加 trafficGroup ★★★
+        // 由于 globalSettings 已存在，我们追加元素。
+        // 但此时 globalSettings 还未添加到 container，我们可以直接操作。
+        // 我们先添加 restartBtn，再添加 trafficGroup。
+        globalSettings.appendChild(restartBtn);
+        globalSettings.appendChild(trafficGroup);
 
         container.appendChild(globalSettings);
 
@@ -766,7 +929,6 @@ return view.extend({
                 tr.appendChild(E('td', { class: 'usage-cell' }, usageSpan));
 
                 var actionsTd = E('td', { class: 'actions-cell' });
-                // 编辑按钮
                 var editBtn = E('button', {
                     class: 'tc-btn tc-btn-edit',
                     click: function(ev) {
@@ -781,7 +943,6 @@ return view.extend({
                 }, _('编辑'));
                 actionsTd.appendChild(editBtn);
 
-                // 重置按钮
                 var resetBtn = E('button', {
                     class: 'tc-btn tc-btn-reset',
                     click: function(ev) {
@@ -789,17 +950,7 @@ return view.extend({
                         if (confirm(_('确定要重置该设备的时间限制吗？'))) {
                             resetDevice(id).then(function() {
                                 showTip(_('重置成功，将在下一分钟生效'), 'info');
-                                getDeviceUsage(id).then(function(output) {
-                                    var span = document.querySelector('.usage-display[data-id="' + id + '"]');
-                                    if (span) {
-                                        var parts = output.split(',');
-                                        var display = parts.map(function(p) {
-                                            var kv = p.split(':');
-                                            return kv.length === 2 ? _('时段%s: %s分钟').format(kv[0], kv[1]) : p;
-                                        }).join(' | ');
-                                        span.textContent = display;
-                                    }
-                                });
+                                updateAllUsage();
                             }).catch(function(err) {
                                 showTip(_('重置失败: ') + err, 'error');
                             });
@@ -808,7 +959,6 @@ return view.extend({
                 }, _('重置'));
                 actionsTd.appendChild(resetBtn);
 
-                // 删除按钮
                 var delBtn = E('button', {
                     class: 'tc-btn tc-btn-del',
                     click: function(ev) {
@@ -839,18 +989,81 @@ return view.extend({
         // ===== 轮询更新已用时长 =====
         function updateAllUsage() {
             var spans = document.querySelectorAll('.usage-display');
+            if (!spans.length) return;
+            var promises = [];
             spans.forEach(function(span) {
                 var id = span.dataset.id;
-                if (id) {
-                    getDeviceUsage(id).then(function(output) {
-                        var parts = output.split(',');
-                        var display = parts.map(function(p) {
-                            var kv = p.split(':');
-                            return kv.length === 2 ? _('时段%s: %s分钟').format(kv[0], kv[1]) : p;
-                        }).join(' | ');
-                        span.textContent = display;
-                    }).catch(function() {});
+                if (!id) return;
+                var dev = null;
+                for (var i = 0; i < devices.length; i++) {
+                    if (devices[i]['.name'] === id) {
+                        dev = devices[i];
+                        break;
+                    }
                 }
+                if (!dev) return;
+                promises.push(
+                    getDeviceUsage(id).then(function(output) {
+                        return { span: span, dev: dev, output: output };
+                    }).catch(function() {
+                        return null;
+                    })
+                );
+            });
+            Promise.all(promises).then(function(results) {
+                results.forEach(function(item) {
+                    if (!item) return;
+                    var span = item.span;
+                    if (!span || !span.parentNode) return;
+                    var dev = item.dev;
+                    var output = item.output;
+                    if (output === '--' || !output) {
+                        span.textContent = '--';
+                        return;
+                    }
+                    var mode = dev.time_mode || 'period';
+                    var parts = output.split(',');
+                    var displayParts = [];
+                    if (mode === 'multi_period') {
+                        var usageMap = {};
+                        parts.forEach(function(p) {
+                            var kv = p.trim().split(':');
+                            if (kv.length === 2) {
+                                usageMap[parseInt(kv[0])] = parseInt(kv[1]);
+                            }
+                        });
+                        for (var p = 1; p <= 3; p++) {
+                            var used = usageMap[p] !== undefined ? usageMap[p] : 0;
+                            if (isNaN(used)) used = 0;
+                            displayParts.push(_('时段%s: %s分钟').format(p, used));
+                        }
+                    } else {
+                        var total = 0;
+                        if (parts.length === 1 && parts[0].trim().match(/^\d+$/)) {
+                            total = parseInt(parts[0].trim());
+                        } else if (parts.length === 1 && parts[0].includes(':')) {
+                            var kv2 = parts[0].trim().split(':');
+                            total = parseInt(kv2[1]) || 0;
+                        } else {
+                            parts.forEach(function(p) {
+                                var kv3 = p.trim().split(':');
+                                if (kv3.length === 2) {
+                                    total += parseInt(kv3[1]) || 0;
+                                }
+                            });
+                        }
+                        if (isNaN(total)) total = 0;
+                        var limit = parseInt(dev.duration) || 0;
+                        if (limit > 0 && total >= limit) {
+                            displayParts.push(_('超时（%s分钟）').format(total));
+                        } else {
+                            displayParts.push(_('已用 %s 分钟').format(total));
+                        }
+                    }
+                    span.textContent = displayParts.join(' | ');
+                });
+            }).catch(function(err) {
+                console.warn('[TimeControl] 轮询更新出错:', err);
             });
         }
 
