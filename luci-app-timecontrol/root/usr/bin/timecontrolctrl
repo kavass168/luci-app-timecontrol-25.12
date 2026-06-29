@@ -486,10 +486,7 @@ main_loop() {
                     for p in 1 2 3; do
                         local start=$(config_t_get device "period${p}_start" "$id" "")
                         [ -z "$start" ] && continue
-                        local end=$(config_t_get device "period${p}_end" "$id" "")
-                        if is_time_in_range "$start" "$end"; then
-                            update_period_state "$target" "$p" "deny"
-                        fi
+                        update_period_state "$target" "$p" "deny"
                     done
                 fi
                 # 跳过后续流量逻辑
