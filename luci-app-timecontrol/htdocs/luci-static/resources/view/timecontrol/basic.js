@@ -813,11 +813,9 @@ return view.extend({
 
                 Promise.all([p1, p2, p3, p4])
                     .then(function() {
-                        return fs.exec_direct('/usr/bin/timecontrol', ['restart']);
-                    })
-                    .then(function() {
-                        showTip(_('流量感知配置已保存并应用'), 'info');
-                        setTimeout(function() { location.reload(); }, 800);
+                        showTip(_('流量感知配置已保存，请点击底部“保存并应用”生效'), 'info');
+                        btn.disabled = false;
+                        btn.textContent = _('保存流量感知设置');
                     })
                     .catch(function(err) {
                         console.error('[TimeControl] 保存流量感知配置失败:', err);
@@ -1069,5 +1067,23 @@ return view.extend({
         }, 10);
 
         return E('div', { class: 'cbi-map' }, [container]);
+    },
+    // ★★★ 自定义保存并应用（保留父类保存逻辑，增加重启） ★★★
+    handleSaveApply: function() {
+        var self = this;
+        // 先调用父类的 handleSaveApply（它会保存 Map 配置，并调用 handleSave）
+        return view.prototype.handleSaveApply.call(this)
+            .then(function() {
+                // 保存成功后重启服务
+                return fs.exec_direct('/usr/bin/timecontrol', ['restart']);
+            })
+            .then(function() {
+                ui.addNotification(null, E('p', _('所有配置已应用，服务已重启')), 'info');
+            })
+            .catch(function(err) {
+                console.error('[TimeControl] 应用配置失败:', err);
+                ui.addNotification(null, E('p', _('应用失败，请手动重启服务')), 'error');
+            });
     }
+    // ★★★ 注意：这里不再覆盖 handleSave 和 handleReset，让父类提供默认实现 ★★★
 });
