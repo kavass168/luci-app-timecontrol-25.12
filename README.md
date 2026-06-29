@@ -18,3 +18,5 @@ sh /tmp/install.sh
 
 ## 功能说明：
 
+复制开源项目：https://github.com/sirpdboy/luci-app-timecontrol 感谢作者。本人只是做简单适配25.12,，修改添加些功能。
+添加多时段控制支持，添加流量感知计时。
