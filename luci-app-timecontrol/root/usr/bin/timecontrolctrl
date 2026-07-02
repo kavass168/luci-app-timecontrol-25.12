@@ -147,9 +147,16 @@ reset_duration_counter() {
         "weekly")  reset_value=$(date +%Y%W) ;;
         "monthly") reset_value=$(date +%Y%m) ;;
     esac
-    sed -i "/^$target,/d" "$DURATION_DB" 2>/dev/null
+    
+    # 改用 grep -vF 重建文件，确保彻底清除旧记录
+    local tmp_file="${DURATION_DB}.tmp"
+    grep -vF "$target," "$DURATION_DB" > "$tmp_file" 2>/dev/null
+    cat "$tmp_file" > "$DURATION_DB"
+    rm -f "$tmp_file"
     echo "$target,$current_time,0,$current_time" >> "$DURATION_DB"
     echo "$reset_value" > "$DURATION_DIR/last_reset_$target"
+    
+    info "重置时长: $target (周期: $reset_cycle)"
 }
 
 get_period_used() {
@@ -211,9 +218,16 @@ reset_period_counter() {
         "weekly")  reset_value=$(date +%Y%W) ;;
         "monthly") reset_value=$(date +%Y%m) ;;
     esac
-    sed -i "/^$target,$period,/d" "$PERIOD_DURATION_DB" 2>/dev/null
+    
+    # 改用 grep -vF 重建文件，确保彻底清除旧记录
+    local tmp_file="${PERIOD_DURATION_DB}.tmp"
+    grep -vF "$target,$period," "$PERIOD_DURATION_DB" > "$tmp_file" 2>/dev/null
+    cat "$tmp_file" > "$PERIOD_DURATION_DB"
+    rm -f "$tmp_file"
     echo "$target,$period,0,0,$current_time" >> "$PERIOD_DURATION_DB"
     echo "$reset_value" > "$DURATION_DIR/last_reset_${target}_period${period}"
+    
+    info "重置时段$period 时长: $target (周期: $reset_cycle)"
 }
 
 should_reset_period() {
